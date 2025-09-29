@@ -7,9 +7,13 @@
 
 import SwiftUI
 import SwiftData
+import FirebaseCore
 
 @main
 struct SnapPicApp: App {
+    init() {
+        FirebaseApp.configure()
+    }
     @StateObject private var auth = AuthViewModel()
     var sharedModelContainer: ModelContainer = {
         let schema = Schema([
@@ -28,7 +32,7 @@ struct SnapPicApp: App {
         WindowGroup {
             Group {
                 if auth.isLoggedIn {
-                    ContentView()
+                    LayoutSelectionView()
                 } else {
                     if auth.showSignUp {
                         SignUpView()

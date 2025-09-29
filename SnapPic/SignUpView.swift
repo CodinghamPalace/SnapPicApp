@@ -79,11 +79,11 @@ struct SignUpView: View {
                     .frame(height: 52)
                 }
                 .buttonStyle(.borderedProminent)
-                .disabled(auth.isLoading)
+                .disabled(auth.isLoading || auth.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !auth.validateEmail(auth.email) || auth.password.count < 6)
 
                 Button(action: auth.signUpWithGoogle) {
                     HStack(spacing: 12) {
-                        Image(systemName: "globe")
+                        Image("google-icons")
                         Text("Sign up with ") + Text("Google").bold()
                         Spacer(minLength: 0)
                     }

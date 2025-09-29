@@ -1,79 +1,102 @@
-// filepath: /Users/student/Documents/snappic/SnapPic/SnapPic/CameraService.swift
 //  CameraService.swift
 //  SnapPic
 //
-//  Lightweight AVFoundation wrapper for preview and photo capture.
+//  AVFoundation camera wrapper for live preview + photo capture with reliable delegate retention.
 
 import Foundation
 import AVFoundation
 import UIKit
+import SwiftUI
 
 final class CameraService: NSObject, ObservableObject {
     @Published var isSessionRunning = false
+    @Published var activePosition: AVCaptureDevice.Position = .back
+
     let session = AVCaptureSession()
     private let sessionQueue = DispatchQueue(label: "camera.session.queue")
     private let photoOutput = AVCapturePhotoOutput()
     private var videoDeviceInput: AVCaptureDeviceInput?
 
+    // Retain delegates until completion to avoid premature deallocation
+    private var inFlightPhotoDelegates: [PhotoCaptureDelegate] = []
+
     // Simulator detection
     static var isSimulator: Bool {
-#if targetEnvironment(simulator)
+        #if targetEnvironment(simulator)
         return true
-#else
+        #else
         return false
-#endif
+        #endif
     }
 
-    override init() { super.init() }
+    var isFront: Bool { activePosition == .front }
 
+    override init() {
+        super.init()
+    }
+
+    // MARK: - Lifecycle
     func configure() {
-        // If running in Simulator, skip real camera setup and mark session running.
         if Self.isSimulator {
             DispatchQueue.main.async { self.isSessionRunning = true }
             return
         }
-        sessionQueue.async { [weak self] in
-            self?._configure()
+        switch AVCaptureDevice.authorizationStatus(for: .video) {
+        case .notDetermined:
+            AVCaptureDevice.requestAccess(for: .video) { [weak self] granted in
+                guard let self else { return }
+                if granted { self.configure() } else { DispatchQueue.main.async { self.isSessionRunning = false } }
+            }
+            return
+        case .denied, .restricted:
+            DispatchQueue.main.async { self.isSessionRunning = false }
+            return
+        case .authorized:
+            break
+        @unknown default:
+            return
         }
+        sessionQueue.async { [weak self] in self?._configure() }
     }
 
     private func _configure() {
-        guard AVCaptureDevice.authorizationStatus(for: .video) != .denied else { return }
+        guard AVCaptureDevice.authorizationStatus(for: .video) == .authorized else { return }
         session.beginConfiguration()
         session.sessionPreset = .photo
 
         // Input
-        if let currentInput = videoDeviceInput {
-            session.removeInput(currentInput)
-            videoDeviceInput = nil
-        }
-        guard let device = AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: .back) ??
-                AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: .front) else {
-            session.commitConfiguration()
-            return
-        }
-        do {
-            let input = try AVCaptureDeviceInput(device: device)
-            if session.canAddInput(input) { session.addInput(input); videoDeviceInput = input }
-        } catch {
-            print("Camera input error: \(error)")
+        if let input = videoDeviceInput { session.removeInput(input) }
+        let position = activePosition
+        let device = AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: position) ??
+                     AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: .back)
+        if let device {
+            do {
+                let input = try AVCaptureDeviceInput(device: device)
+                if session.canAddInput(input) { session.addInput(input); videoDeviceInput = input }
+            } catch {
+                print("Camera input error: \(error)")
+            }
         }
 
         // Output
-        if session.canAddOutput(photoOutput) { session.addOutput(photoOutput) }
-        if #unavailable(iOS 16.0) {
-            photoOutput.isHighResolutionCaptureEnabled = true
-        }
+        if session.canAddOutput(photoOutput) && !session.outputs.contains(photoOutput) { session.addOutput(photoOutput) }
+        if #unavailable(iOS 16.0) { photoOutput.isHighResolutionCaptureEnabled = true }
 
         session.commitConfiguration()
         start()
     }
 
-    func start() {
-        if Self.isSimulator {
-            // Already marked running in configure
-            return
+    func switchCamera() {
+        guard !Self.isSimulator else { return }
+        sessionQueue.async { [weak self] in
+            guard let self else { return }
+            self.activePosition = (self.activePosition == .back) ? .front : .back
+            self._configure()
         }
+    }
+
+    func start() {
+        guard !Self.isSimulator else { return }
         sessionQueue.async { [weak self] in
             guard let self else { return }
             guard !self.session.isRunning else { return }
@@ -83,7 +106,7 @@ final class CameraService: NSObject, ObservableObject {
     }
 
     func stop() {
-        if Self.isSimulator { return }
+        guard !Self.isSimulator else { return }
         sessionQueue.async { [weak self] in
             guard let self else { return }
             guard self.session.isRunning else { return }
@@ -92,21 +115,38 @@ final class CameraService: NSObject, ObservableObject {
         }
     }
 
+    // MARK: - Capture
     func capturePhoto(flashMode: AVCaptureDevice.FlashMode = .off, completion: @escaping (UIImage?) -> Void) {
         if Self.isSimulator {
-            // Generate a placeholder image to emulate capture.
-            let image = Self.generatePlaceholder()
-            completion(image)
+            completion(Self.generatePlaceholder())
             return
         }
         let settings = AVCapturePhotoSettings()
         settings.flashMode = flashMode
-        if #unavailable(iOS 16.0) {
-            settings.isHighResolutionPhotoEnabled = true
-        }
-        photoOutput.capturePhoto(with: settings, delegate: PhotoCaptureDelegate { image in
+        if #unavailable(iOS 16.0) { settings.isHighResolutionPhotoEnabled = true }
+        if let conn = photoOutput.connection(with: .video), let vo = Self.currentVideoOrientation() { conn.videoOrientation = vo }
+        let delegate = PhotoCaptureDelegate { [weak self] del, image in
             DispatchQueue.main.async { completion(image) }
-        })
+            self?.removeInFlightDelegate(del)
+        }
+        addInFlightDelegate(delegate)
+        photoOutput.capturePhoto(with: settings, delegate: delegate)
+    }
+
+    private func addInFlightDelegate(_ delegate: PhotoCaptureDelegate) { inFlightPhotoDelegates.append(delegate) }
+    private func removeInFlightDelegate(_ delegate: PhotoCaptureDelegate) { inFlightPhotoDelegates.removeAll { $0 === delegate } }
+
+    // MARK: - Helpers
+    private static func currentVideoOrientation() -> AVCaptureVideoOrientation? {
+        var orientation: UIInterfaceOrientation? = nil
+        if let scene = UIApplication.shared.connectedScenes.first as? UIWindowScene { orientation = scene.interfaceOrientation }
+        switch orientation ?? .portrait {
+        case .portrait: return .portrait
+        case .portraitUpsideDown: return .portraitUpsideDown
+        case .landscapeLeft: return .landscapeLeft
+        case .landscapeRight: return .landscapeRight
+        @unknown default: return .portrait
+        }
     }
 
     private static func generatePlaceholder() -> UIImage? {
@@ -118,46 +158,48 @@ final class CameraService: NSObject, ObservableObject {
         return renderer.image { ctx in
             bg.setFill(); ctx.fill(CGRect(origin: .zero, size: size))
             let paragraph = NSMutableParagraphStyle(); paragraph.alignment = .center
-            let attrs: [NSAttributedString.Key: Any] = [
+            let titleAttrs: [NSAttributedString.Key: Any] = [
                 .font: UIFont.systemFont(ofSize: 80, weight: .bold),
                 .foregroundColor: UIColor.white,
                 .paragraphStyle: paragraph
             ]
-            let subtitleAttrs: [NSAttributedString.Key: Any] = [
+            let subAttrs: [NSAttributedString.Key: Any] = [
                 .font: UIFont.systemFont(ofSize: 42, weight: .semibold),
                 .foregroundColor: UIColor.white.withAlphaComponent(0.9),
                 .paragraphStyle: paragraph
             ]
-            let text = "SIM CAPTURE"
-            let rect = CGRect(x: 0, y: size.height * 0.33 - 120, width: size.width, height: 200)
-            text.draw(in: rect, withAttributes: attrs)
-            let sub = stamp
-            let subRect = CGRect(x: 0, y: rect.maxY + 10, width: size.width, height: 120)
-            sub.draw(in: subRect, withAttributes: subtitleAttrs)
+            ("SIM CAPTURE" as NSString).draw(in: CGRect(x: 0, y: size.height * 0.33 - 120, width: size.width, height: 200), withAttributes: titleAttrs)
+            (stamp as NSString).draw(in: CGRect(x: 0, y: size.height * 0.33 + 10, width: size.width, height: 140), withAttributes: subAttrs)
         }
     }
 }
 
+// MARK: - Capture delegate retained until completion
 private final class PhotoCaptureDelegate: NSObject, AVCapturePhotoCaptureDelegate {
-    private let completion: (UIImage?) -> Void
-    init(completion: @escaping (UIImage?) -> Void) { self.completion = completion }
+    private let onComplete: (PhotoCaptureDelegate, UIImage?) -> Void
+    init(onComplete: @escaping (PhotoCaptureDelegate, UIImage?) -> Void) { self.onComplete = onComplete }
 
     func photoOutput(_ output: AVCapturePhotoOutput, didFinishProcessingPhoto photo: AVCapturePhoto, error: Error?) {
         if let error = error { print("Photo capture error: \(error)") }
-        guard let data = photo.fileDataRepresentation(), let image = UIImage(data: data) else {
-            completion(nil); return
-        }
-        completion(image)
+        let image: UIImage?
+        if let data = photo.fileDataRepresentation() { image = UIImage(data: data) } else { image = nil }
+        onComplete(self, image)
     }
 }
 
-import SwiftUI
-
+// MARK: - SwiftUI Preview layer
 struct CameraPreviewView: UIViewRepresentable {
     let session: AVCaptureSession
+    var mirror: Bool = false
 
     func makeUIView(context: Context) -> PreviewUIView { PreviewUIView() }
-    func updateUIView(_ uiView: PreviewUIView, context: Context) { uiView.session = session }
+    func updateUIView(_ uiView: PreviewUIView, context: Context) {
+        uiView.session = session
+        if let conn = uiView.previewLayer.connection {
+            conn.automaticallyAdjustsVideoMirroring = false
+            conn.isVideoMirrored = mirror
+        }
+    }
 
     final class PreviewUIView: UIView {
         override class var layerClass: AnyClass { AVCaptureVideoPreviewLayer.self }

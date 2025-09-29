@@ -24,6 +24,7 @@ struct LayoutSelectionView: View {
     @State private var selected: LayoutOption? = nil
     // Navigate to capture screen when true
     @State private var goToCapture: Bool = false
+    @EnvironmentObject private var auth: AuthViewModel
 
     private let options: [LayoutOption] = [
         .init(title: "Layout A", poses: 4, assetName: "Layout A"),
@@ -48,7 +49,7 @@ struct LayoutSelectionView: View {
                                 card(option, availableWidth: geo.size.width)
                             }
                         }
-                        continueButton
+                        buttonsRow
                     }
                     .padding(.horizontal, horizontalPadding(for: geo.size.width))
                     .padding(.top, 32)
@@ -137,6 +138,16 @@ struct LayoutSelectionView: View {
         .accessibilityAddTraits(isSelected ? .isSelected : [])
     }
 
+    // MARK: - Buttons Row
+    private var buttonsRow: some View {
+        HStack(spacing: 16) {
+            continueButton
+            signOutButton
+        }
+        .padding(.horizontal, 24)
+        .padding(.top, 8)
+    }
+
     // MARK: - Continue Button
     private var continueButton: some View {
         Button(action: continueAction) {
@@ -154,11 +165,29 @@ struct LayoutSelectionView: View {
                 )
                 .shadow(color: Color.black.opacity(0.07), radius: 4, y: 2)
         )
-        .padding(.horizontal, 80)
-        .padding(.top, 8)
         .disabled(selected == nil)
         .opacity(selected == nil ? 0.55 : 1)
         .animation(.easeInOut(duration: 0.2), value: selected == nil)
+    }
+
+    // MARK: - Sign Out Button
+    private var signOutButton: some View {
+        Button(action: { auth.signOut() }) {
+            Text("Sign Out")
+                .font(.headline)
+                .foregroundColor(.red)
+                .frame(maxWidth: .infinity)
+                .frame(height: 54)
+        }
+        .background(
+            Capsule()
+                .fill(Color.white.opacity(0.6))
+                .overlay(
+                    Capsule().stroke(Color.red.opacity(0.9), lineWidth: 1.4)
+                )
+                .shadow(color: Color.black.opacity(0.07), radius: 4, y: 2)
+        )
+        .accessibilityLabel("Sign out")
     }
 
     // MARK: - Helpers
@@ -201,4 +230,4 @@ extension Color {
     }
 }
 
-#Preview { LayoutSelectionView() }
+#Preview { LayoutSelectionView().environmentObject(AuthViewModel()) }

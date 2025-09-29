@@ -50,6 +50,7 @@ struct LoginView: View {
                     Button("Forgot Password?") { auth.forgotPassword() }
                         .font(.subheadline)
                         .frame(maxWidth: .infinity, alignment: .trailing)
+                        .disabled(auth.isLoading || !auth.validateEmail(auth.email))
                 }
 
                 if let error = auth.errorMessage { Text(error).foregroundStyle(.red).multilineTextAlignment(.center) }
@@ -64,11 +65,11 @@ struct LoginView: View {
                     .frame(height: 52)
                 }
                 .buttonStyle(.borderedProminent)
-                .disabled(auth.isLoading)
+                .disabled(auth.isLoading || !auth.validateEmail(auth.email) || auth.password.isEmpty)
 
                 Button(action: auth.signInWithGoogle) {
                     HStack(spacing: 12) {
-                        Image(systemName: "globe")
+                        Image("google-icons")
                         Text("Log in with ") + Text("Google").bold()
                         Spacer(minLength: 0)
                     }

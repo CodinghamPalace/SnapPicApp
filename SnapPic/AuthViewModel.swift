@@ -1,9 +1,6 @@
 //  AuthViewModel.swift
 //  SnapPic
-//
-//  Created by Automated Assistant on 8/28/25.
-//
-//  NOTE: This is a lightweight placeholder auth layer. Replace with real backend / Firebase later.
+//  NOTE: Backend-enabled auth using Firebase REST via AuthService.
 
 import Foundation
 import Combine
@@ -11,7 +8,7 @@ import SwiftUI
 
 @MainActor
 final class AuthViewModel: ObservableObject {
-    // Persist simple login state (NOT secure, just demo)
+    // Persist simple login state for routing only (token lives in Keychain)
     @AppStorage("isLoggedIn") private var storedIsLoggedIn: Bool = false
     @Published var isLoggedIn: Bool = false
 
@@ -27,79 +24,97 @@ final class AuthViewModel: ObservableObject {
     @Published var showSignUp: Bool = false
 
     init() {
-        isLoggedIn = storedIsLoggedIn
+        // Restore session if a token exists
+        if let _ = KeychainHelper.readString(KeychainHelper.Key.idToken) {
+            isLoggedIn = true
+            storedIsLoggedIn = true
+        } else {
+            isLoggedIn = storedIsLoggedIn
+        }
     }
 
     func signIn() {
         errorMessage = nil
         infoMessage = nil
-        guard validateEmail(email) else {
-            errorMessage = "Enter a valid email address"
-            return
-        }
-        guard !password.isEmpty else {
-            errorMessage = "Password can't be empty"
-            return
-        }
+        guard validateEmail(email) else { errorMessage = "Enter a valid email address"; return }
+        guard !password.isEmpty else { errorMessage = "Password can't be empty"; return }
         isLoading = true
-        // Simulate network delay
-        Task { [weak self] in
-            try? await Task.sleep(nanoseconds: 600_000_000) // 0.6s
-            guard let self else { return }
-            // Accept any credentials for demo
-            self.isLoading = false
-            self.isLoggedIn = true
-            self.storedIsLoggedIn = true
+        Task {
+            do {
+                let user = try await AuthService.shared.signIn(email: email, password: password)
+                setSession(user)
+            } catch {
+                errorMessage = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+                isLoggedIn = false
+                storedIsLoggedIn = false
+            }
+            isLoading = false
         }
-    }
-
-    func signOut() {
-        isLoggedIn = false
-        storedIsLoggedIn = false
-        email = ""
-        password = ""
-    }
-
-    func forgotPassword() {
-        errorMessage = nil
-        infoMessage = "Password reset link (demo) would be sent to \(email)."
-    }
-
-    func signInWithGoogle() {
-        errorMessage = nil
-        infoMessage = "Google Sign-In not implemented in demo"
     }
 
     func signUp() {
         errorMessage = nil
         infoMessage = nil
-        guard !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            errorMessage = "Name is required"
-            return
-        }
-        guard validateEmail(email) else {
-            errorMessage = "Enter a valid email address"
-            return
-        }
-        guard password.count >= 6 else {
-            errorMessage = "Password must be at least 6 characters"
-            return
-        }
+        guard !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { errorMessage = "Name is required"; return }
+        guard validateEmail(email) else { errorMessage = "Enter a valid email address"; return }
+        guard password.count >= 6 else { errorMessage = "Password must be at least 6 characters"; return }
         isLoading = true
-        // Simulate network delay
+        Task {
+            do {
+                let user = try await AuthService.shared.signUp(email: email, password: password, displayName: name)
+                setSession(user)
+            } catch {
+                errorMessage = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+                isLoggedIn = false
+                storedIsLoggedIn = false
+            }
+            isLoading = false
+        }
+    }
+
+    func forgotPassword() {
+        errorMessage = nil
+        infoMessage = nil
+        guard validateEmail(email) else { errorMessage = "Enter your account email"; return }
+        isLoading = true
+        Task {
+            defer { isLoading = false }
+            do {
+                try await AuthService.shared.sendPasswordReset(email: email)
+                infoMessage = "Password reset email sent"
+            } catch {
+                errorMessage = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+            }
+        }
+    }
+
+    func signInWithGoogle() {
+        errorMessage = nil
+        infoMessage = nil
+        isLoading = true
         Task { [weak self] in
-            try? await Task.sleep(nanoseconds: 800_000_000) // 0.8s
             guard let self else { return }
-            // Accept any credentials for demo
-            self.isLoading = false
-            self.isLoggedIn = true
-            self.storedIsLoggedIn = true
+            defer { self.isLoading = false }
+            do {
+                let idToken = try await GoogleOAuthHelper.getIDToken()
+                let user = try await AuthService.shared.signInWithGoogle(idToken: idToken, accessToken: nil)
+                self.setSession(user)
+            } catch {
+                self.errorMessage = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+            }
         }
     }
 
     func signUpWithGoogle() {
-        errorMessage = nil
-        infoMessage = "Google Sign-Up not implemented in demo"
+        // Same flow as sign-in: IdP creates account if it doesn't exist
+        signInWithGoogle()
+    }
+
+    func signOut() {
+        KeychainHelper.clearAll()
+        isLoggedIn = false
+        storedIsLoggedIn = false
+        clearFields()
     }
 
     func showLogin() {
@@ -110,6 +125,15 @@ final class AuthViewModel: ObservableObject {
     func showSignUpPage() {
         showSignUp = true
         clearFields()
+    }
+
+    private func setSession(_ user: AuthUser) {
+        KeychainHelper.saveString(user.idToken, key: KeychainHelper.Key.idToken)
+        KeychainHelper.saveString(user.refreshToken, key: KeychainHelper.Key.refreshToken)
+        KeychainHelper.saveString(user.localId, key: KeychainHelper.Key.userId)
+        KeychainHelper.saveString(user.email, key: KeychainHelper.Key.email)
+        isLoggedIn = true
+        storedIsLoggedIn = true
     }
 
     private func clearFields() {
