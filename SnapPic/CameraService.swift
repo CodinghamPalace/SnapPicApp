@@ -7,6 +7,8 @@ import Foundation
 import AVFoundation
 import UIKit
 import SwiftUI
+import CoreImage
+import MetalKit
 
 final class CameraService: NSObject, ObservableObject {
     @Published var isSessionRunning = false
@@ -15,7 +17,12 @@ final class CameraService: NSObject, ObservableObject {
     let session = AVCaptureSession()
     private let sessionQueue = DispatchQueue(label: "camera.session.queue")
     private let photoOutput = AVCapturePhotoOutput()
+    private let videoOutput = AVCaptureVideoDataOutput()
+    private let videoOutputQueue = DispatchQueue(label: "camera.video.output")
     private var videoDeviceInput: AVCaptureDeviceInput?
+    private var videoDelegate: VideoOutputDelegate?
+    // Latest live frame callback (CIImage in camera orientation space)
+    var frameHandler: ((CIImage, CMTime) -> Void)?
 
     // Retain delegates until completion to avoid premature deallocation
     private var inFlightPhotoDelegates: [PhotoCaptureDelegate] = []
@@ -78,9 +85,26 @@ final class CameraService: NSObject, ObservableObject {
             }
         }
 
-        // Output
+        // Photo output
         if session.canAddOutput(photoOutput) && !session.outputs.contains(photoOutput) { session.addOutput(photoOutput) }
         if #unavailable(iOS 16.0) { photoOutput.isHighResolutionCaptureEnabled = true }
+
+        // Video data output for live preview processing
+        if !session.outputs.contains(videoOutput) {
+            videoOutput.alwaysDiscardsLateVideoFrames = true
+            videoOutput.videoSettings = [kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA]
+            if session.canAddOutput(videoOutput) { session.addOutput(videoOutput) }
+        }
+        let vDelegate = VideoOutputDelegate { [weak self] image, time in
+            guard let self else { return }
+            self.frameHandler?(image, time)
+        }
+        videoDelegate = vDelegate
+        videoOutput.setSampleBufferDelegate(vDelegate, queue: videoOutputQueue)
+        if let conn = videoOutput.connection(with: .video), let vo = Self.currentVideoOrientation() {
+            conn.videoOrientation = vo
+            conn.isVideoMirrored = (activePosition == .front)
+        }
 
         session.commitConfiguration()
         start()
@@ -187,6 +211,21 @@ private final class PhotoCaptureDelegate: NSObject, AVCapturePhotoCaptureDelegat
     }
 }
 
+// MARK: - Video output delegate
+private final class VideoOutputDelegate: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate {
+    private let handler: (CIImage, CMTime) -> Void
+    init(handler: @escaping (CIImage, CMTime) -> Void) { self.handler = handler }
+
+    func captureOutput(_ output: AVCaptureOutput, didOutput sampleBuffer: CMSampleBuffer, from connection: AVCaptureConnection) {
+        guard let pb: CVPixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
+        let time = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
+        let ci = CIImage(cvPixelBuffer: pb)
+        handler(ci, time)
+    }
+}
+
+// (frameHandler stored directly on CameraService)
+
 // MARK: - SwiftUI Preview layer
 struct CameraPreviewView: UIViewRepresentable {
     let session: AVCaptureSession
@@ -210,6 +249,72 @@ struct CameraPreviewView: UIViewRepresentable {
                 previewLayer.session = newValue
                 previewLayer.videoGravity = .resizeAspectFill
             }
+        }
+    }
+}
+
+// MARK: - Live filtered preview using MTKView + Core Image
+struct LiveFilteredCameraView: UIViewRepresentable {
+    let camera: CameraService
+    var filter: (CIImage) -> CIImage
+
+    func makeUIView(context: Context) -> MTKCIView {
+        let view = MTKCIView()
+        view.setup()
+        // Subscribe to frames
+        camera.frameHandler = { [weak view] ci, _ in
+            view?.enqueue(ci)
+        }
+        return view
+    }
+
+    func updateUIView(_ uiView: MTKCIView, context: Context) {
+        uiView.filter = filter
+        uiView.isMirrored = camera.isFront
+    }
+
+    final class MTKCIView: MTKView {
+        private(set) var ciContext: CIContext!
+        var latestImage: CIImage?
+        var filter: (CIImage) -> CIImage = { $0 }
+        var isMirrored: Bool = false
+
+        func setup() {
+            device = MTLCreateSystemDefaultDevice()
+            framebufferOnly = false
+            enableSetNeedsDisplay = false
+            isPaused = true
+            colorPixelFormat = .bgra8Unorm
+            ciContext = CIContext(mtlDevice: device!)
+            preferredFramesPerSecond = 60
+        }
+
+        func enqueue(_ image: CIImage) {
+            latestImage = image
+            setNeedsDisplay()
+        }
+
+        override func draw(_ rect: CGRect) {
+            guard let currentDrawable = currentDrawable, let image = latestImage else { return }
+            var output = filter(image)
+            // Aspect fill to view size
+            let viewSize = drawableSize
+            let scale = max(viewSize.width / output.extent.width, viewSize.height / output.extent.height)
+            let scaled = output.transformed(by: CGAffineTransform(scaleX: scale, y: scale))
+            var x = (viewSize.width - scaled.extent.width) / 2
+            var y = (viewSize.height - scaled.extent.height) / 2
+            var renderImage = scaled
+            if isMirrored {
+                renderImage = renderImage.transformed(by: CGAffineTransform(scaleX: -1, y: 1)).transformed(by: CGAffineTransform(translationX: renderImage.extent.width, y: 0))
+            }
+            let dest = CIRenderDestination(width: Int(viewSize.width), height: Int(viewSize.height), pixelFormat: colorPixelFormat, commandBuffer: nil, mtlTexture: currentDrawable.texture, options: nil)
+            do {
+                try ciContext.startTask(toRender: renderImage, from: CGRect(x: -x, y: -y, width: viewSize.width, height: viewSize.height), to: dest)
+            } catch {
+                // Fallback basic render
+                ciContext.render(renderImage, to: currentDrawable.texture, commandBuffer: nil, bounds: CGRect(x: -x, y: -y, width: viewSize.width, height: viewSize.height), colorSpace: CGColorSpaceCreateDeviceRGB())
+            }
+            currentDrawable.present()
         }
     }
 }

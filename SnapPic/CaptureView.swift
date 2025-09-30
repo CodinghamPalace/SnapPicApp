@@ -5,6 +5,8 @@
 
 import SwiftUI
 import PhotosUI
+import CoreImage
+import CoreImage.CIFilterBuiltins
 
 struct CaptureView: View {
     let option: LayoutOption
@@ -19,6 +21,7 @@ struct CaptureView: View {
     @State private var countdown = 5
     @State private var isCapturing = false
     @State private var countdownTask: Task<Void, Never>? = nil
+    private static let ciContext = CIContext()
 
     init(option: LayoutOption) {
         self.option = option
@@ -50,12 +53,19 @@ struct CaptureView: View {
             Task { await loadPicked(newItem) }
         }
         .navigationDestination(isPresented: $goToEditor) {
-            PhotoStripEditorView(option: option, images: images.compactMap { $0 })
+            PhotoStripEditorView(option: option, images: filteredImages)
         }
         .alert("Fill all slots", isPresented: $showIncompleteAlert) {
             Button("OK", role: .cancel) {}
         } message: {
             Text("Please capture or pick a photo for each slot before proceeding.")
+        }
+    }
+
+    private var filteredImages: [UIImage] {
+        images.compactMap { img in
+            guard let img else { return nil }
+            return applyFilter(selectedFilter, to: img)
         }
     }
 
@@ -99,7 +109,7 @@ struct CaptureView: View {
                 Image(uiImage: applyFilter(selectedFilter, to: img))
                     .resizable().scaledToFill().clipped()
             } else if idx == currentIndex {
-                CameraPreviewView(session: camera.session, mirror: camera.isFront)
+                LiveFilteredCameraView(camera: camera, filter: liveFilterClosure(for: selectedFilter))
                     .overlay {
                         if isCountingDown {
                             ZStack {
@@ -221,16 +231,87 @@ struct CaptureView: View {
     }
 
     private func applyFilter(_ kind: FilterKind, to image: UIImage) -> UIImage {
-        guard kind != .none, let cg = image.cgImage else { return image }
-        let overlay: UIColor = (kind == .warm ? .systemOrange : kind == .cool ? .systemTeal : .black)
-        let size = CGSize(width: cg.width, height: cg.height)
-        return UIGraphicsImageRenderer(size: size).image { ctx in
-            UIImage(cgImage: cg, scale: image.scale, orientation: image.imageOrientation)
-                .draw(in: CGRect(origin: .zero, size: size))
-            overlay.withAlphaComponent(kind == .mono ? 0.65 : 0.25).setFill()
-            ctx.fill(CGRect(origin: .zero, size: size))
-            if kind == .mono { ctx.cgContext.setBlendMode(.luminosity) }
+        guard let inputCI = CIImage(image: image) else { return image }
+        let closure = filterClosure(for: kind)
+        let outputCI = closure(inputCI)
+        guard let cg = Self.ciContext.createCGImage(outputCI, from: outputCI.extent) else { return image }
+        return UIImage(cgImage: cg, scale: image.scale, orientation: image.imageOrientation)
+    }
+
+    private func filterClosure(for kind: FilterKind) -> (CIImage) -> CIImage {
+        switch kind {
+        case .none:
+            return { $0 }
+        case .mono:
+            let noir = CIFilter.photoEffectNoir()
+            return { input in noir.inputImage = input; return (noir.outputImage ?? input).cropped(to: input.extent) }
+        case .warm:
+            let temp = CIFilter.temperatureAndTint(); let vib = CIFilter.vibrance()
+            return { input in
+                temp.inputImage = input; temp.neutral = SIMD2<Float>(6500, 0); temp.targetNeutral = SIMD2<Float>(7500, 0)
+                let warmed = temp.outputImage ?? input
+                vib.inputImage = warmed; vib.amount = 0.3
+                return (vib.outputImage ?? warmed).cropped(to: input.extent)
+            }
+        case .cool:
+            let temp = CIFilter.temperatureAndTint(); let sat = CIFilter.colorControls()
+            return { input in
+                temp.inputImage = input; temp.neutral = SIMD2<Float>(6500, 0); temp.targetNeutral = SIMD2<Float>(5000, 0)
+                let cooled = temp.outputImage ?? input
+                sat.inputImage = cooled; sat.saturation = 0.9
+                return (sat.outputImage ?? cooled).cropped(to: input.extent)
+            }
+        case .instant:
+            let f = CIFilter.photoEffectInstant()
+            return { input in f.inputImage = input; return (f.outputImage ?? input).cropped(to: input.extent) }
+        case .fade:
+            let f = CIFilter.photoEffectFade()
+            return { input in f.inputImage = input; return (f.outputImage ?? input).cropped(to: input.extent) }
+        case .chrome:
+            let f = CIFilter.photoEffectChrome()
+            return { input in f.inputImage = input; return (f.outputImage ?? input).cropped(to: input.extent) }
+        case .transfer:
+            let f = CIFilter.photoEffectTransfer()
+            return { input in f.inputImage = input; return (f.outputImage ?? input).cropped(to: input.extent) }
+        case .process:
+            let f = CIFilter.photoEffectProcess()
+            return { input in f.inputImage = input; return (f.outputImage ?? input).cropped(to: input.extent) }
+        case .sepia:
+            let f = CIFilter.sepiaTone(); f.intensity = 0.9
+            return { input in f.inputImage = input; return (f.outputImage ?? input).cropped(to: input.extent) }
+        case .monoHigh:
+            let mono = CIFilter.photoEffectMono(); let cc = CIFilter.colorControls(); cc.contrast = 1.2
+            return { input in mono.inputImage = input; let m = mono.outputImage ?? input; cc.inputImage = m; return (cc.outputImage ?? m).cropped(to: input.extent) }
+        case .vignette:
+            let vig = CIFilter.vignette(); vig.intensity = 0.9; vig.radius = 2.0
+            return { input in vig.inputImage = input; return (vig.outputImage ?? input).cropped(to: input.extent) }
+        case .lomo:
+            let cc = CIFilter.colorControls(); cc.saturation = 1.25; cc.contrast = 1.1
+            let vig = CIFilter.vignette(); vig.intensity = 1.0; vig.radius = 2.5
+            return { input in cc.inputImage = input; let a = cc.outputImage ?? input; vig.inputImage = a; return (vig.outputImage ?? a).cropped(to: input.extent) }
+        case .duotone:
+            let mono = CIFilter.colorControls(); mono.saturation = 0
+            let duo = CIFilter.falseColor()
+            duo.color0 = CIColor(red: 0.10, green: 0.14, blue: 0.22) // shadows
+            duo.color1 = CIColor(red: 1.00, green: 0.85, blue: 0.60) // highlights
+            return { input in mono.inputImage = input; let m = mono.outputImage ?? input; duo.inputImage = m; return (duo.outputImage ?? m).cropped(to: input.extent) }
+        case .posterize:
+            let f = CIFilter.colorPosterize(); f.levels = 6.0
+            return { input in f.inputImage = input; return (f.outputImage ?? input).cropped(to: input.extent) }
+        case .comic:
+            let f = CIFilter.comicEffect()
+            return { input in f.inputImage = input; return (f.outputImage ?? input).cropped(to: input.extent) }
+        case .bloom:
+            let bloom = CIFilter.bloom(); bloom.intensity = 0.8; bloom.radius = 10.0
+            return { input in bloom.inputImage = input; let b = bloom.outputImage ?? input; return b.composited(over: input).cropped(to: input.extent) }
+        case .halftone:
+            let dot = CIFilter.dotScreen(); dot.width = 6.0; dot.sharpness = 0.7; dot.angle = 0.0
+            return { input in dot.inputImage = input; dot.center = CGPoint(x: input.extent.midX, y: input.extent.midY); return (dot.outputImage ?? input).cropped(to: input.extent) }
         }
+    }
+
+    private func liveFilterClosure(for kind: FilterKind) -> (CIImage) -> CIImage {
+        filterClosure(for: kind)
     }
 
     // MARK: - Missing Additions
@@ -254,14 +335,45 @@ struct CaptureView: View {
     }
 
     enum FilterKind: CaseIterable {
-        case none, warm, cool, mono
+        case none
+        case mono
+        case monoHigh
+        case sepia
+        case warm
+        case cool
+        case instant
+        case fade
+        case chrome
+        case transfer
+        case process
+        case vignette
+        case lomo
+        case duotone
+        case posterize
+        case comic
+        case bloom
+        case halftone
 
         var label: String {
             switch self {
                 case .none: return "None"
+                case .mono: return "Mono"
+                case .monoHigh: return "Mono (High Contrast)"
+                case .sepia: return "Sepia"
                 case .warm: return "Warm"
                 case .cool: return "Cool"
-                case .mono: return "Mono"
+                case .instant: return "Instant"
+                case .fade: return "Fade"
+                case .chrome: return "Chrome"
+                case .transfer: return "Transfer"
+                case .process: return "Process"
+                case .vignette: return "Vignette"
+                case .lomo: return "Lomo"
+                case .duotone: return "Duotone"
+                case .posterize: return "Posterize"
+                case .comic: return "Comic"
+                case .bloom: return "Bloom"
+                case .halftone: return "Halftone"
             }
         }
     }
