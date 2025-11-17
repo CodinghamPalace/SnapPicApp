@@ -45,16 +45,17 @@ struct LiveFilteredCameraView: UIViewRepresentable {
         func configure() {
             device = MTLCreateSystemDefaultDevice()
             framebufferOnly = false
-            enableSetNeedsDisplay = false
-            isPaused = true
+            enableSetNeedsDisplay = true
+            isPaused = false
             colorPixelFormat = .bgra8Unorm
             if let device { ciContext = CIContext(mtlDevice: device) }
             preferredFramesPerSecond = 60
+            isPaused = false
         }
 
         func enqueue(_ image: CIImage) {
             latestImage = image
-            setNeedsDisplay()
+            DispatchQueue.main.async { [weak self] in self?.draw() }
         }
 
         func teardown() {

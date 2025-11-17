@@ -147,6 +147,11 @@ struct CaptureView: View {
             }
             .disabled(isCountingDown || isCapturing)
 
+            Button(action: resetSession) {
+                controlButton(icon: "arrow.counterclockwise")
+            }
+            .disabled(isCountingDown || isCapturing)
+
             Menu {
                 ForEach(FilterKind.allCases, id: \.self) { kind in
                     Button(kind.label) { selectedFilter = kind }
@@ -202,12 +207,10 @@ struct CaptureView: View {
             }
             if currentIndex < images.count {
                 runCountdownThenCapture(then: { autoContinueIfNeeded() })
-            } else {
-                goToEditor = true
             }
         } else {
             if !images.contains(where: { $0 == nil }) {
-                goToEditor = true
+                // All slots filled. Await user action to proceed.
             }
         }
     }
@@ -216,6 +219,14 @@ struct CaptureView: View {
         countdownTask?.cancel()
         countdownTask = nil
         isCountingDown = false
+    }
+
+    private func resetSession() {
+        cancelCountdown()
+        isCapturing = false
+        images = Array(repeating: nil, count: option.poses)
+        currentIndex = 0
+        goToEditor = false
     }
 
     private func loadPicked(_ item: PhotosPickerItem) async {
