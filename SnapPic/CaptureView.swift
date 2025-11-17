@@ -248,7 +248,9 @@ struct CaptureView: View {
         case .warm:
             let temp = CIFilter.temperatureAndTint(); let vib = CIFilter.vibrance()
             return { input in
-                temp.inputImage = input; temp.neutral = SIMD2<Float>(6500, 0); temp.targetNeutral = SIMD2<Float>(7500, 0)
+                temp.inputImage = input
+                temp.neutral = CIVector(x: 6500, y: 0)
+                temp.targetNeutral = CIVector(x: 7500, y: 0)
                 let warmed = temp.outputImage ?? input
                 vib.inputImage = warmed; vib.amount = 0.3
                 return (vib.outputImage ?? warmed).cropped(to: input.extent)
@@ -256,7 +258,9 @@ struct CaptureView: View {
         case .cool:
             let temp = CIFilter.temperatureAndTint(); let sat = CIFilter.colorControls()
             return { input in
-                temp.inputImage = input; temp.neutral = SIMD2<Float>(6500, 0); temp.targetNeutral = SIMD2<Float>(5000, 0)
+                temp.inputImage = input
+                temp.neutral = CIVector(x: 6500, y: 0)
+                temp.targetNeutral = CIVector(x: 5000, y: 0)
                 let cooled = temp.outputImage ?? input
                 sat.inputImage = cooled; sat.saturation = 0.9
                 return (sat.outputImage ?? cooled).cropped(to: input.extent)
