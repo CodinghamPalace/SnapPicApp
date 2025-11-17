@@ -206,8 +206,23 @@ private final class PhotoCaptureDelegate: NSObject, AVCapturePhotoCaptureDelegat
     func photoOutput(_ output: AVCapturePhotoOutput, didFinishProcessingPhoto photo: AVCapturePhoto, error: Error?) {
         if let error = error { print("Photo capture error: \(error)") }
         let image: UIImage?
-        if let data = photo.fileDataRepresentation() { image = UIImage(data: data) } else { image = nil }
+        if let data = photo.fileDataRepresentation() {
+            let rawImage = UIImage(data: data)
+            image = rawImage?.normalizedOrientation()
+        } else {
+            image = nil
+        }
         onComplete(self, image)
+    }
+}
+
+private extension UIImage {
+    func normalizedOrientation() -> UIImage {
+        if imageOrientation == .up { return self }
+        UIGraphicsBeginImageContextWithOptions(size, false, scale)
+        defer { UIGraphicsEndImageContext() }
+        draw(in: CGRect(origin: .zero, size: size))
+        return UIGraphicsGetImageFromCurrentImageContext() ?? self
     }
 }
 
