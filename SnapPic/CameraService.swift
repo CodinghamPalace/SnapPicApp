@@ -162,15 +162,25 @@ final class CameraService: NSObject, ObservableObject {
 
     // MARK: - Helpers
     private static func currentVideoOrientation() -> AVCaptureVideoOrientation? {
-        var orientation: UIInterfaceOrientation? = nil
-        if let scene = UIApplication.shared.connectedScenes.first as? UIWindowScene { orientation = scene.interfaceOrientation }
-        switch orientation ?? .portrait {
+        let orientation: UIInterfaceOrientation = currentInterfaceOrientation()
+        switch orientation {
         case .portrait: return .portrait
         case .portraitUpsideDown: return .portraitUpsideDown
         case .landscapeLeft: return .landscapeLeft
         case .landscapeRight: return .landscapeRight
         @unknown default: return .portrait
         }
+    }
+
+    private static func currentInterfaceOrientation() -> UIInterfaceOrientation {
+        if Thread.isMainThread {
+            return (UIApplication.shared.connectedScenes.first as? UIWindowScene)?.interfaceOrientation ?? .portrait
+        }
+        var orientation: UIInterfaceOrientation = .portrait
+        DispatchQueue.main.sync {
+            orientation = (UIApplication.shared.connectedScenes.first as? UIWindowScene)?.interfaceOrientation ?? .portrait
+        }
+        return orientation
     }
 
     private static func generatePlaceholder() -> UIImage? {

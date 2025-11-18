@@ -5,6 +5,7 @@
 import SwiftUI
 import PhotosUI
 import Photos
+import UIKit
 
 struct PhotoStripEditorView: View {
     let option: LayoutOption
@@ -137,10 +138,10 @@ struct PhotoStripEditorView: View {
                     Button("Sharper") { cornerRadius = max(0, cornerRadius - 4) }
                     Toggle("Shadow", isOn: $shadow)
                     Divider()
-                    backgroundColorButton(.white, label: "BG • White")
-                    backgroundColorButton(Color(white: 0.98), label: "BG • Paper")
-                    backgroundColorButton(.black, label: "BG • Black")
-                    backgroundColorButton(LinearGradient(gradient: Gradient(colors: [.pink.opacity(0.2), .blue.opacity(0.2)]), startPoint: .top, endPoint: .bottom).resolvedColor, label: "BG • Sunset")
+                    backgroundColorButton(Palette.white, label: "BG • White")
+                    backgroundColorButton(Palette.paper, label: "BG • Paper")
+                    backgroundColorButton(Palette.black, label: "BG • Black")
+                    backgroundColorButton(Palette.sunset, label: "BG • Sunset")
                 } label: { toolbarButton(title: "Style", system: "slider.horizontal.3", width: tileWidth) }
 
                 // Share
@@ -249,26 +250,53 @@ private extension PhotoStripEditorView {
     }
 }
 
+private enum Palette {
+    static let white: Color = .white
+    static let paper: Color = Color(white: 0.98)
+    static let black: Color = .black
+    static let sunset: Color = {
+        let gradient = LinearGradient(
+            gradient: Gradient(colors: [Color.pink.opacity(0.2), Color.blue.opacity(0.2)]),
+            startPoint: .top,
+            endPoint: .bottom
+        )
+        let image = UIImage.gradientImage(with: gradient, size: CGSize(width: 4, height: 4))
+        return Color(uiColor: UIColor(patternImage: image))
+    }()
+}
+
 private struct ShareSheet: UIViewControllerRepresentable {
     let activityItems: [Any]
     func makeUIViewController(context: Context) -> UIActivityViewController { UIActivityViewController(activityItems: activityItems, applicationActivities: nil) }
     func updateUIViewController(_ controller: UIActivityViewController, context: Context) {}
 }
 
-private extension LinearGradient {
-    var resolvedColor: Color {
-        let img = UIImage.gradientImage(with: self, size: CGSize(width: 4, height: 4))
-        return Color(uiColor: UIColor(patternImage: img))
-    }
+private enum Palette {
+    static let white: Color = .white
+    static let paper: Color = Color(white: 0.98)
+    static let black: Color = .black
+    static let sunset: Color = {
+        let gradient = LinearGradient(
+            gradient: Gradient(colors: [Color.pink.opacity(0.2), Color.blue.opacity(0.2)]),
+            startPoint: .top,
+            endPoint: .bottom
+        )
+        let image = UIImage.gradientImage(with: gradient, size: CGSize(width: 4, height: 4))
+        return Color(uiColor: UIColor(patternImage: image))
+    }()
 }
 
 private extension UIImage {
     static func gradientImage(with gradient: LinearGradient, size: CGSize) -> UIImage {
-        let hosting = UIHostingController(rootView: gradient)
-        hosting.view.bounds = CGRect(origin: .zero, size: size)
+        let stops = gradient.gradient.stops
+        let colors = stops.map { UIColor($0.color).cgColor } as CFArray
+        let locations = stops.map { CGFloat($0.location) }
         let renderer = UIGraphicsImageRenderer(size: size)
         return renderer.image { ctx in
-            hosting.view.drawHierarchy(in: hosting.view.bounds, afterScreenUpdates: true)
+            guard let cgGradient = CGGradient(colorsSpace: CGColorSpaceCreateDeviceRGB(), colors: colors, locations: locations) else { return }
+            let start = CGPoint(x: gradient.startPoint.x * size.width, y: gradient.startPoint.y * size.height)
+            let end = CGPoint(x: gradient.endPoint.x * size.width, y: gradient.endPoint.y * size.height)
+            ctx.cgContext.drawLinearGradient(cgGradient, start: start, end: end, options: [])
         }
     }
 }
