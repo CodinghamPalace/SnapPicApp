@@ -15,6 +15,7 @@ struct PhotoStripEditorView: View {
     @State private var spacing: CGFloat = 22
     @State private var cornerRadius: CGFloat = 14
     @State private var shadow: Bool = false
+    @State private var showBorderPicker = false
 
     @State private var isSharing = false
     @State private var exportImage: UIImage?
@@ -48,6 +49,9 @@ struct PhotoStripEditorView: View {
         .navigationBarTitleDisplayMode(.inline)
         .sheet(isPresented: $isSharing) {
             if let img = exportImage { ShareSheet(activityItems: [img]) }
+        }
+        .sheet(isPresented: $showBorderPicker) {
+            borderPickerSheet
         }
         .alert("Save to Photos", isPresented: $showSaveAlert) {
             Button("OK", role: .cancel) {}
@@ -118,13 +122,7 @@ struct PhotoStripEditorView: View {
             let tileWidth = max(60, (contentWidth - tileSpacing * (count - 1)) / count)
             HStack(spacing: tileSpacing) {
                 // Border
-                Menu {
-                    colorPickerButton(.white, label: "White")
-                    colorPickerButton(.black, label: "Black")
-                    colorPickerButton(.gray.opacity(0.3), label: "Gray")
-                    colorPickerButton(.blue.opacity(0.25), label: "Blue")
-                    colorPickerButton(.pink.opacity(0.25), label: "Pink")
-                } label: { toolbarButton(title: "Border", system: "circle.lefthalf.filled", width: tileWidth) }
+                Button { showBorderPicker = true } label: { toolbarButton(title: "Border", system: "circle.lefthalf.filled", width: tileWidth) }
 
                 // Style
                 Menu {
@@ -166,10 +164,6 @@ struct PhotoStripEditorView: View {
         .foregroundStyle(.primary)
         .frame(width: width, height: 52)
         .background(Color.primary.opacity(0.08), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-    }
-
-    private func colorPickerButton(_ color: Color, label: String) -> some View {
-        Button(label) { borderColor = color }
     }
 
     private func backgroundColorButton(_ color: Color, label: String) -> some View {
@@ -223,6 +217,25 @@ struct PhotoStripEditorView: View {
         VStack { composedStripView(width: 1200).padding(16).background(backgroundColor) }
             .frame(maxWidth: .infinity, alignment: .center)
             .background(backgroundColor)
+    }
+}
+
+private extension PhotoStripEditorView {
+    var borderPickerSheet: some View {
+        NavigationStack {
+            VStack(spacing: 24) {
+                ColorPicker("Border Color", selection: $borderColor, supportsOpacity: false)
+                    .padding()
+                Spacer()
+            }
+            .navigationTitle("Border")
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Done") { showBorderPicker = false }
+                }
+            }
+        }
+        .presentationDetents([.medium, .large])
     }
 }
 
