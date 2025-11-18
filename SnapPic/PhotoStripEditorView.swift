@@ -16,6 +16,7 @@ struct PhotoStripEditorView: View {
     @State private var cornerRadius: CGFloat = 14
     @State private var shadow: Bool = false
     @State private var showBorderPicker = false
+    @State private var pendingBorderColor: Color = .white
 
     @State private var isSharing = false
     @State private var exportImage: UIImage?
@@ -122,7 +123,10 @@ struct PhotoStripEditorView: View {
             let tileWidth = max(60, (contentWidth - tileSpacing * (count - 1)) / count)
             HStack(spacing: tileSpacing) {
                 // Border
-                Button { showBorderPicker = true } label: { toolbarButton(title: "Border", system: "circle.lefthalf.filled", width: tileWidth) }
+                Button {
+                    pendingBorderColor = borderColor
+                    showBorderPicker = true
+                } label: { toolbarButton(title: "Border", system: "circle.lefthalf.filled", width: tileWidth) }
 
                 // Style
                 Menu {
@@ -224,14 +228,20 @@ private extension PhotoStripEditorView {
     var borderPickerSheet: some View {
         NavigationStack {
             VStack(spacing: 24) {
-                ColorPicker("Border Color", selection: $borderColor, supportsOpacity: false)
+                ColorPicker("Border Color", selection: $pendingBorderColor, supportsOpacity: false)
                     .padding()
                 Spacer()
             }
             .navigationTitle("Border")
             .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { showBorderPicker = false }
+                }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("Done") { showBorderPicker = false }
+                    Button("Done") {
+                        borderColor = pendingBorderColor
+                        showBorderPicker = false
+                    }
                 }
             }
         }
