@@ -18,11 +18,15 @@ struct PhotoStripEditorView: View {
     @State private var shadow: Bool = false
     @State private var showBorderPicker = false
     @State private var pendingBorderColor: Color = .white
+    @State private var stickerStyle: StickerStyle = .none
+    @State private var showStickerPicker = false
 
-    @State private var isSharing = false
-    @State private var exportImage: UIImage?
     @State private var showSaveAlert = false
     @State private var saveMessage = ""
+    @State private var shareSheetState: ShareSheetState = .idle
+    @State private var sharePayload: QRSharePayload?
+    @State private var shareError: String?
+    @State private var isShareSheetPresented = false
 
     @Environment(\.dismiss) private var dismiss
 
@@ -36,7 +40,9 @@ struct PhotoStripEditorView: View {
                         .background(Color.blue.opacity(0.18), in: Capsule())
                     stripPreview
                         .padding(16)
-                        .background(backgroundColor, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+                        .background(borderColor, in: RoundedRectangle(cornerRadius: 22, style: .continuous))
+                        .padding(12)
+                        .background(backgroundColor, in: RoundedRectangle(cornerRadius: 28, style: .continuous))
                         .padding(.horizontal)
                         .shadow(radius: shadow ? 10 : 0)
                 }
@@ -49,11 +55,18 @@ struct PhotoStripEditorView: View {
         }
         .navigationTitle("Editor")
         .navigationBarTitleDisplayMode(.inline)
-        .sheet(isPresented: $isSharing) {
-            if let img = exportImage { ShareSheet(activityItems: [img]) }
-        }
         .sheet(isPresented: $showBorderPicker) {
             borderPickerSheet
+        }
+        .sheet(isPresented: $showStickerPicker) {
+            stickerPickerSheet
+        }
+        .sheet(isPresented: $isShareSheetPresented) {
+            QRShareSheet(state: $shareSheetState, payload: sharePayload, errorMessage: $shareError) {
+                isShareSheetPresented = false
+            } retryAction: {
+                Task { await startShareFlow() }
+            }
         }
         .alert("Save to Photos", isPresented: $showSaveAlert) {
             Button("OK", role: .cancel) {}
@@ -82,7 +95,7 @@ struct PhotoStripEditorView: View {
         let safeWidth = max(1, width)
         let itemHeight = (safeWidth - CGFloat(columnCount - 1) * spacing) / CGFloat(columnCount) / itemAspect
 
-        return VStack(spacing: spacing) {
+        let strip = VStack(spacing: spacing) {
             ForEach(0..<rows, id: \.self) { r in
                 HStack(spacing: spacing) {
                     ForEach(0..<columnCount, id: \.self) { c in
@@ -92,8 +105,6 @@ struct PhotoStripEditorView: View {
                                 .resizable()
                                 .scaledToFill()
                                 .frame(width: (safeWidth - CGFloat(columnCount - 1) * spacing) / CGFloat(columnCount), height: max(1, itemHeight))
-                                .clipped()
-                                .background(borderColor, in: RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
                                 .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
                         } else {
                             Spacer(minLength: 0)
@@ -102,6 +113,11 @@ struct PhotoStripEditorView: View {
                 }
             }
         }
+
+        return strip
+            .overlay(alignment: .center) {
+                StickerOverlayCanvas(style: stickerStyle)
+            }
     }
 
     private func previewHeight(for width: CGFloat) -> CGFloat {
@@ -123,13 +139,13 @@ struct PhotoStripEditorView: View {
             let contentWidth = max(1, geo.size.width)
             let tileWidth = max(60, (contentWidth - tileSpacing * (count - 1)) / count)
             HStack(spacing: tileSpacing) {
-                // Border
+                // Border (use asset image)
                 Button {
                     pendingBorderColor = borderColor
                     showBorderPicker = true
-                } label: { toolbarButton(title: "Border", system: "circle.lefthalf.filled", width: tileWidth) }
+                } label: { toolbarButton(title: "Border", assetName: "border_color_icon", width: tileWidth) }
 
-                // Style
+                // Style (use asset image)
                 Menu {
                     Button("Tighter") { spacing = max(6, spacing - 6) }
                     Button("Looser") { spacing = min(40, spacing + 6) }
@@ -142,16 +158,18 @@ struct PhotoStripEditorView: View {
                     backgroundColorButton(Palette.paper, label: "BG • Paper")
                     backgroundColorButton(Palette.black, label: "BG • Black")
                     backgroundColorButton(Palette.sunset, label: "BG • Sunset")
-                } label: { toolbarButton(title: "Style", system: "slider.horizontal.3", width: tileWidth) }
+                    Divider()
+                    Button("Sticker Overlay") { showStickerPicker = true }
+                } label: { toolbarButton(title: "Style", assetName: "style_button_icon", width: tileWidth) }
 
-                // Share
-                Button { share() } label: { toolbarButton(title: "Share", system: "square.and.arrow.up", width: tileWidth) }
+                // Share (use asset image)
+                Button { Task { await startShareFlow() } } label: { toolbarButton(title: "Share", assetName: "qr_code_icon", width: tileWidth) }
 
-                // New photo
+                // New photo (keep SF Symbol)
                 Button { dismiss() } label: { toolbarButton(title: "New photo", system: "camera", width: tileWidth) }
 
-                // Save
-                Button { saveToPhotos() } label: { toolbarButton(title: "Save", system: "square.and.arrow.down.fill", width: tileWidth) }
+                // Save (keep SF Symbol)
+                Button { Task { await saveToPhotosAsync() } } label: { toolbarButton(title: "Save", system: "square.and.arrow.down.fill", width: tileWidth) }
             }
         }
         .frame(height: 62)
@@ -160,6 +178,23 @@ struct PhotoStripEditorView: View {
     private func toolbarButton(title: String, system: String, width: CGFloat) -> some View {
         VStack(spacing: 4) {
             Image(systemName: system).font(.system(size: 18, weight: .semibold))
+            Text(title)
+                .font(.caption2)
+                .lineLimit(1)
+                .minimumScaleFactor(0.8)
+                .allowsTightening(true)
+        }
+        .foregroundStyle(.primary)
+        .frame(width: width, height: 52)
+        .background(Color.primary.opacity(0.08), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+    }
+
+    private func toolbarButton(title: String, assetName: String, width: CGFloat) -> some View {
+        VStack(spacing: 4) {
+            Image(assetName)
+                .resizable()
+                .scaledToFit()
+                .frame(height: 18)
             Text(title)
                 .font(.caption2)
                 .lineLimit(1)
@@ -182,38 +217,61 @@ struct PhotoStripEditorView: View {
         return renderer.uiImage
     }
 
-    private func share() {
-        if let ui = renderStripImage() { self.exportImage = ui; self.isSharing = true }
+    private let qrShareService: QRShareServicing = QRShareService()
+
+    private func startShareFlow() async {
+        await MainActor.run {
+            shareSheetState = .preparing
+            shareError = nil
+            isShareSheetPresented = true
+        }
+
+        let renderer = ImageRenderer(content: stripRenderContent)
+        renderer.scale = 3
+        guard let uiImage = renderer.uiImage else {
+            await MainActor.run {
+                shareSheetState = .error
+                shareError = "Unable to render the photo strip."
+            }
+            return
+        }
+
+        do {
+            let payload = try await qrShareService.createShare(for: uiImage)
+            await MainActor.run {
+                sharePayload = payload
+                shareSheetState = .ready
+            }
+        } catch {
+            await MainActor.run {
+                shareSheetState = .error
+                shareError = error.localizedDescription
+            }
+        }
     }
 
-    private func saveToPhotos() {
+    private func saveToPhotosAsync() async {
         guard let ui = renderStripImage() else { return }
-        PHPhotoLibrary.requestAuthorization(for: .addOnly) { status in
-            switch status {
-            case .authorized, .limited:
-                PHPhotoLibrary.shared().performChanges({
-                    PHAssetChangeRequest.creationRequestForAsset(from: ui)
-                }) { success, error in
-                    DispatchQueue.main.async {
-                        if success { self.saveMessage = "Saved to Photos." } else { self.saveMessage = "Save failed: \(error?.localizedDescription ?? "Unknown error")" }
-                        self.showSaveAlert = true
-                    }
-                }
-            case .denied, .restricted:
-                DispatchQueue.main.async {
-                    self.saveMessage = "Photos access denied. Enable in Settings to save."
-                    self.showSaveAlert = true
-                }
-            case .notDetermined:
-                DispatchQueue.main.async {
-                    self.saveMessage = "Photos permission not determined. Try again."
-                    self.showSaveAlert = true
-                }
-            @unknown default:
-                DispatchQueue.main.async {
-                    self.saveMessage = "Unable to save due to unknown permission status."
-                    self.showSaveAlert = true
-                }
+        let status = await PHPhotoLibrary.requestAuthorization(for: .addOnly)
+        guard status == .authorized || status == .limited else {
+            await MainActor.run {
+                saveMessage = "Photos access denied. Enable in Settings to save."
+                showSaveAlert = true
+            }
+            return
+        }
+        do {
+            try await PHPhotoLibrary.shared().performChanges {
+                PHAssetChangeRequest.creationRequestForAsset(from: ui)
+            }
+            await MainActor.run {
+                saveMessage = "Saved to Photos."
+                showSaveAlert = true
+            }
+        } catch {
+            await MainActor.run {
+                saveMessage = "Save failed: \(error.localizedDescription)"
+                showSaveAlert = true
             }
         }
     }
@@ -248,55 +306,292 @@ private extension PhotoStripEditorView {
         }
         .presentationDetents([.medium, .large])
     }
+
+    var stickerPickerSheet: some View {
+        ZStack {
+            Color.black.opacity(0.25).ignoresSafeArea()
+            StickerPickerPanel(selection: $stickerStyle) {
+                showStickerPicker = false
+            }
+        }
+        .presentationDetents([.fraction(0.65)])
+        .presentationDragIndicator(.hidden)
+    }
+}
+
+private struct StickerPickerPanel: View {
+    @Binding var selection: StickerStyle
+    let dismiss: () -> Void
+
+    private let columns = [GridItem(.flexible(), spacing: 16), GridItem(.flexible(), spacing: 16)]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 24) {
+            HStack {
+                Text("Sticker Overlay")
+                    .font(.title3)
+                    .bold()
+                Spacer()
+                Button(action: dismiss) {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 18, weight: .bold))
+                        .foregroundColor(.primary)
+                        .frame(width: 36, height: 36)
+                        .background(Color.primary.opacity(0.05), in: Circle())
+                }
+                .buttonStyle(.plain)
+            }
+
+            LazyVGrid(columns: columns, spacing: 16) {
+                ForEach(StickerStyle.allCases) { style in
+                    StickerOptionButton(style: style, isSelected: selection == style) {
+                        selection = style
+                        dismiss()
+                    }
+                }
+            }
+        }
+        .padding(24)
+        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 32, style: .continuous))
+        .padding(.horizontal, 32)
+    }
+}
+
+private struct StickerOptionButton: View {
+    let style: StickerStyle
+    let isSelected: Bool
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Text(style.title)
+                .font(.headline)
+                .foregroundStyle(style.titleColor)
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 18)
+                .background(style.buttonGradient)
+                .clipShape(Capsule())
+                .overlay(
+                    Capsule()
+                        .strokeBorder(isSelected ? Color.black.opacity(0.25) : Color.white.opacity(0.7), lineWidth: isSelected ? 3 : 1)
+                )
+                .shadow(color: Color.black.opacity(0.12), radius: isSelected ? 10 : 5, x: 0, y: isSelected ? 6 : 3)
+        }
+        .buttonStyle(.plain)
+    }
+}
+
+private struct StickerOverlayCanvas: View {
+    let style: StickerStyle
+
+    var body: some View {
+        if style.hasStickers {
+            GeometryReader { geo in
+                ForEach(style.stickerSpecs) { spec in
+                    Image(spec.imageName)
+                        .resizable()
+                        .scaledToFit()
+                        .frame(width: geo.size.width * spec.widthFactor)
+                        .rotationEffect(.degrees(spec.rotation))
+                        .opacity(spec.opacity)
+                        .position(x: geo.size.width * spec.position.x, y: geo.size.height * spec.position.y)
+                        .shadow(color: .black.opacity(0.18), radius: 8, x: 0, y: 6)
+                }
+            }
+            .allowsHitTesting(false)
+        }
+    }
+}
+
+private struct StickerSpec: Identifiable {
+    let id = UUID()
+    let imageName: String
+    let position: CGPoint
+    let widthFactor: CGFloat
+    let rotation: Double
+    let opacity: Double
+
+    init(imageName: String, position: CGPoint, widthFactor: CGFloat, rotation: Double = 0, opacity: Double = 1) {
+        self.imageName = imageName
+        self.position = position
+        self.widthFactor = widthFactor
+        self.rotation = rotation
+        self.opacity = opacity
+    }
+}
+
+private enum StickerStyle: String, CaseIterable, Identifiable {
+    case none
+    case miffy
+    case mofussand
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .none: return "Remove Stickers"
+        case .miffy: return "Miffy"
+        case .mofussand: return "Mofussand"
+        }
+    }
+
+    var titleColor: Color {
+        switch self {
+        case .none: return .primary
+        default: return .black
+        }
+    }
+
+    var buttonGradient: LinearGradient {
+        switch self {
+        case .none:
+            return LinearGradient(colors: [Color.white, Color(white: 0.95)], startPoint: .topLeading, endPoint: .bottomTrailing)
+        case .miffy:
+            return LinearGradient(colors: [Color(red: 1.0, green: 0.8, blue: 0.9), Color(red: 1.0, green: 0.64, blue: 0.78)], startPoint: .topLeading, endPoint: .bottomTrailing)
+        case .mofussand:
+            return LinearGradient(colors: [Color(red: 1.0, green: 0.95, blue: 0.72), Color(red: 1.0, green: 0.86, blue: 0.38)], startPoint: .topLeading, endPoint: .bottomTrailing)
+        }
+    }
+
+    var stickerSpecs: [StickerSpec] {
+        switch self {
+        case .none:
+            return []
+        case .miffy:
+            return [
+                StickerSpec(imageName: "bunny1", position: CGPoint(x: 0.1, y: 0.1), widthFactor: 0.22, rotation: -6),
+                StickerSpec(imageName: "bunny2", position: CGPoint(x: 0.9, y: 0.9), widthFactor: 0.2, rotation: 4)
+            ]
+        case .mofussand:
+            return [
+                StickerSpec(imageName: "cat1", position: CGPoint(x: 0.1, y: 0.1), widthFactor: 0.24, rotation: -8),
+                StickerSpec(imageName: "cat2", position: CGPoint(x: 0.9, y: 0.9), widthFactor: 0.22, rotation: 5)
+            ]
+        }
+    }
+
+    var hasStickers: Bool { !stickerSpecs.isEmpty }
+}
+
+private enum ShareSheetState {
+    case idle
+    case preparing
+    case ready
+    case error
+}
+
+private struct QRShareSheet: View {
+    @Binding var state: ShareSheetState
+    let payload: QRSharePayload?
+    @Binding var errorMessage: String?
+    let dismissAction: () -> Void
+    let retryAction: () -> Void
+
+    var body: some View {
+        ZStack {
+            Color.black.opacity(0.25).ignoresSafeArea()
+            VStack(spacing: 24) {
+                HStack {
+                    Text("QR Code Overlay")
+                        .font(.title3)
+                        .bold()
+                    Spacer()
+                    Button(action: dismissAction) {
+                        Image(systemName: "xmark")
+                            .font(.system(size: 18, weight: .bold))
+                            .foregroundColor(.primary)
+                            .frame(width: 36, height: 36)
+                            .background(Color.primary.opacity(0.05), in: Circle())
+                    }
+                    .buttonStyle(.plain)
+                }
+
+                content
+            }
+            .padding(24)
+            .frame(maxWidth: 360)
+            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 32, style: .continuous))
+            .padding(.horizontal, 32)
+        }
+    }
+
+    @ViewBuilder
+    private var content: some View {
+        switch state {
+        case .preparing:
+            VStack(spacing: 16) {
+                ProgressView()
+                Text("Preparing your photo...")
+                    .font(.callout)
+                    .foregroundColor(.secondary)
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 40)
+        case .ready:
+            if let payload {
+                VStack(spacing: 20) {
+                    Text("Scan this code to view and download your photo!")
+                        .font(.callout)
+                        .multilineTextAlignment(.center)
+                        .foregroundColor(.secondary)
+
+                    if let qrImage = QRCodeImageGenerator.makeImage(from: payload.url.absoluteString, scale: 8) {
+                        Image(uiImage: qrImage)
+                            .interpolation(.none)
+                            .resizable()
+                            .scaledToFit()
+                            .frame(width: 180, height: 180)
+                            .padding(16)
+                            .background(Color.white, in: RoundedRectangle(cornerRadius: 24, style: .continuous))
+                    }
+
+                    Text("Code ID: \(payload.id.uuidString.prefix(8))…")
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
+                }
+            }
+        case .error:
+            VStack(spacing: 16) {
+                Text("Something went wrong")
+                    .font(.headline)
+                Text(errorMessage ?? "Unknown error")
+                    .font(.subheadline)
+                    .foregroundColor(.secondary)
+                    .multilineTextAlignment(.center)
+                Button("Try Again", action: retryAction)
+                    .buttonStyle(.borderedProminent)
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 32)
+        case .idle:
+            EmptyView()
+        }
+    }
 }
 
 private enum Palette {
-    static let white: Color = .white
-    static let paper: Color = Color(white: 0.98)
-    static let black: Color = .black
-    static let sunset: Color = {
-        let gradient = LinearGradient(
-            gradient: Gradient(colors: [Color.pink.opacity(0.2), Color.blue.opacity(0.2)]),
-            startPoint: .top,
-            endPoint: .bottom
-        )
-        let image = UIImage.gradientImage(with: gradient, size: CGSize(width: 4, height: 4))
-        return Color(uiColor: UIColor(patternImage: image))
-    }()
+    static let white = Color(white: 0.97)
+    static let paper = Color(red: 0.97, green: 0.94, blue: 0.89)
+    static let black = Color(red: 0.1, green: 0.1, blue: 0.12)
+    static let sunset = ColorGradient.colors([Color(red: 1.0, green: 0.82, blue: 0.72), Color(red: 0.89, green: 0.74, blue: 0.98)])
 }
 
-private struct ShareSheet: UIViewControllerRepresentable {
-    let activityItems: [Any]
-    func makeUIViewController(context: Context) -> UIActivityViewController { UIActivityViewController(activityItems: activityItems, applicationActivities: nil) }
-    func updateUIViewController(_ controller: UIActivityViewController, context: Context) {}
-}
-
-private enum Palette {
-    static let white: Color = .white
-    static let paper: Color = Color(white: 0.98)
-    static let black: Color = .black
-    static let sunset: Color = {
-        let gradient = LinearGradient(
-            gradient: Gradient(colors: [Color.pink.opacity(0.2), Color.blue.opacity(0.2)]),
-            startPoint: .top,
-            endPoint: .bottom
-        )
-        let image = UIImage.gradientImage(with: gradient, size: CGSize(width: 4, height: 4))
+private enum ColorGradient {
+    static func colors(_ colors: [Color]) -> Color {
+        let image = UIImage.gradientImage(colors: colors, startPoint: CGPoint(x: 0, y: 0), endPoint: CGPoint(x: 1, y: 1), size: CGSize(width: 8, height: 8))
         return Color(uiColor: UIColor(patternImage: image))
-    }()
+    }
 }
 
 private extension UIImage {
-    static func gradientImage(with gradient: LinearGradient, size: CGSize) -> UIImage {
-        let stops = gradient.gradient.stops
-        let colors = stops.map { UIColor($0.color).cgColor } as CFArray
-        let locations = stops.map { CGFloat($0.location) }
+    static func gradientImage(colors: [Color], startPoint: CGPoint, endPoint: CGPoint, size: CGSize) -> UIImage {
+        let cgColors = colors.map { UIColor($0).cgColor } as CFArray
         let renderer = UIGraphicsImageRenderer(size: size)
         return renderer.image { ctx in
-            guard let cgGradient = CGGradient(colorsSpace: CGColorSpaceCreateDeviceRGB(), colors: colors, locations: locations) else { return }
-            let start = CGPoint(x: gradient.startPoint.x * size.width, y: gradient.startPoint.y * size.height)
-            let end = CGPoint(x: gradient.endPoint.x * size.width, y: gradient.endPoint.y * size.height)
-            ctx.cgContext.drawLinearGradient(cgGradient, start: start, end: end, options: [])
+            guard let gradient = CGGradient(colorsSpace: CGColorSpaceCreateDeviceRGB(), colors: cgColors, locations: nil) else { return }
+            let start = CGPoint(x: startPoint.x * size.width, y: startPoint.y * size.height)
+            let finish = CGPoint(x: endPoint.x * size.width, y: endPoint.y * size.height)
+            ctx.cgContext.drawLinearGradient(gradient, start: start, end: finish, options: [])
         }
     }
 }
