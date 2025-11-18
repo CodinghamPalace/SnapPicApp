@@ -345,6 +345,8 @@ struct CaptureView: View {
         if images.contains(where: { $0 == nil }) {
             showIncompleteAlert = true
         } else {
+            cancelCountdown()
+            camera.stop()
             goToEditor = true
         }
     }
