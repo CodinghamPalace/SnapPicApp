@@ -7,6 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		3F73762E2ECC7B9C00FC8C77 /* FirebaseFirestore in Frameworks */ = {isa = PBXBuildFile; productRef = 3F73762D2ECC7B9C00FC8C77 /* FirebaseFirestore */; };
 		3FAC50572E828E0000777BE7 /* FirebaseDatabase in Frameworks */ = {isa = PBXBuildFile; productRef = 3FAC50562E828E0000777BE7 /* FirebaseDatabase */; };
 		3FAC50592E828E0500777BE7 /* FirebaseAuth in Frameworks */ = {isa = PBXBuildFile; productRef = 3FAC50582E828E0500777BE7 /* FirebaseAuth */; };
 		3FAC505B2E828E1100777BE7 /* FirebaseAnalytics in Frameworks */ = {isa = PBXBuildFile; productRef = 3FAC505A2E828E1100777BE7 /* FirebaseAnalytics */; };
@@ -78,6 +79,7 @@
 				3FAC50642E82BBD000777BE7 /* GoogleSignIn in Frameworks */,
 				3FAC50592E828E0500777BE7 /* FirebaseAuth in Frameworks */,
 				3FAC505B2E828E1100777BE7 /* FirebaseAnalytics in Frameworks */,
+				3F73762E2ECC7B9C00FC8C77 /* FirebaseFirestore in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -151,6 +153,7 @@
 				3FAC505A2E828E1100777BE7 /* FirebaseAnalytics */,
 				3FAC50632E82BBD000777BE7 /* GoogleSignIn */,
 				3FAC50652E82BBD000777BE7 /* GoogleSignInSwift */,
+				3F73762D2ECC7B9C00FC8C77 /* FirebaseFirestore */,
 			);
 			productName = SnapPic;
 			productReference = 3F4C5E732E6059D200124459 /* SnapPic.app */;
@@ -320,7 +323,7 @@
 				CODE_SIGN_ENTITLEMENTS = SnapPic/SnapPic.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
-				DEVELOPMENT_TEAM = J6234K82X3;
+				DEVELOPMENT_TEAM = 7Z9QP2P5M8;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = SnapPic/Info.plist;
@@ -352,7 +355,7 @@
 				CODE_SIGN_ENTITLEMENTS = SnapPic/SnapPic.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
-				DEVELOPMENT_TEAM = J6234K82X3;
+				DEVELOPMENT_TEAM = 7Z9QP2P5M8;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = SnapPic/Info.plist;
@@ -624,6 +627,11 @@
 /* End XCRemoteSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
+		3F73762D2ECC7B9C00FC8C77 /* FirebaseFirestore */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 3FAC50542E828D5500777BE7 /* XCRemoteSwiftPackageReference "firebase-ios-sdk" */;
+			productName = FirebaseFirestore;
+		};
 		3FAC50562E828E0000777BE7 /* FirebaseDatabase */ = {
 			isa = XCSwiftPackageProductDependency;
 			package = 3FAC50542E828D5500777BE7 /* XCRemoteSwiftPackageReference "firebase-ios-sdk" */;

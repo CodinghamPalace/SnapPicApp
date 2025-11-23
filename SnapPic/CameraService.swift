@@ -7,6 +7,8 @@ import Foundation
 import AVFoundation
 import UIKit
 import SwiftUI
+import CoreImage
+import MetalKit
 
 final class CameraService: NSObject, ObservableObject {
     @Published var isSessionRunning = false
@@ -15,7 +17,12 @@ final class CameraService: NSObject, ObservableObject {
     let session = AVCaptureSession()
     private let sessionQueue = DispatchQueue(label: "camera.session.queue")
     private let photoOutput = AVCapturePhotoOutput()
+    private let videoOutput = AVCaptureVideoDataOutput()
+    private let videoOutputQueue = DispatchQueue(label: "camera.video.output")
     private var videoDeviceInput: AVCaptureDeviceInput?
+    private var videoDelegate: VideoOutputDelegate?
+    // Latest live frame callback (CIImage in camera orientation space)
+    var frameHandler: ((CIImage, CMTime) -> Void)?
 
     // Retain delegates until completion to avoid premature deallocation
     private var inFlightPhotoDelegates: [PhotoCaptureDelegate] = []
@@ -78,9 +85,26 @@ final class CameraService: NSObject, ObservableObject {
             }
         }
 
-        // Output
+        // Photo output
         if session.canAddOutput(photoOutput) && !session.outputs.contains(photoOutput) { session.addOutput(photoOutput) }
         if #unavailable(iOS 16.0) { photoOutput.isHighResolutionCaptureEnabled = true }
+
+        // Video data output for live preview processing
+        if !session.outputs.contains(videoOutput) {
+            videoOutput.alwaysDiscardsLateVideoFrames = true
+            videoOutput.videoSettings = [kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA]
+            if session.canAddOutput(videoOutput) { session.addOutput(videoOutput) }
+        }
+        let vDelegate = VideoOutputDelegate { [weak self] image, time in
+            guard let self else { return }
+            self.frameHandler?(image, time)
+        }
+        videoDelegate = vDelegate
+        videoOutput.setSampleBufferDelegate(vDelegate, queue: videoOutputQueue)
+        if let conn = videoOutput.connection(with: .video), let vo = Self.currentVideoOrientation() {
+            conn.videoOrientation = vo
+            conn.isVideoMirrored = (activePosition == .front)
+        }
 
         session.commitConfiguration()
         start()
@@ -138,15 +162,25 @@ final class CameraService: NSObject, ObservableObject {
 
     // MARK: - Helpers
     private static func currentVideoOrientation() -> AVCaptureVideoOrientation? {
-        var orientation: UIInterfaceOrientation? = nil
-        if let scene = UIApplication.shared.connectedScenes.first as? UIWindowScene { orientation = scene.interfaceOrientation }
-        switch orientation ?? .portrait {
+        let orientation: UIInterfaceOrientation = currentInterfaceOrientation()
+        switch orientation {
         case .portrait: return .portrait
         case .portraitUpsideDown: return .portraitUpsideDown
         case .landscapeLeft: return .landscapeLeft
         case .landscapeRight: return .landscapeRight
         @unknown default: return .portrait
         }
+    }
+
+    private static func currentInterfaceOrientation() -> UIInterfaceOrientation {
+        if Thread.isMainThread {
+            return (UIApplication.shared.connectedScenes.first as? UIWindowScene)?.interfaceOrientation ?? .portrait
+        }
+        var orientation: UIInterfaceOrientation = .portrait
+        DispatchQueue.main.sync {
+            orientation = (UIApplication.shared.connectedScenes.first as? UIWindowScene)?.interfaceOrientation ?? .portrait
+        }
+        return orientation
     }
 
     private static func generatePlaceholder() -> UIImage? {
@@ -182,10 +216,40 @@ private final class PhotoCaptureDelegate: NSObject, AVCapturePhotoCaptureDelegat
     func photoOutput(_ output: AVCapturePhotoOutput, didFinishProcessingPhoto photo: AVCapturePhoto, error: Error?) {
         if let error = error { print("Photo capture error: \(error)") }
         let image: UIImage?
-        if let data = photo.fileDataRepresentation() { image = UIImage(data: data) } else { image = nil }
+        if let data = photo.fileDataRepresentation() {
+            let rawImage = UIImage(data: data)
+            image = rawImage?.normalizedOrientation()
+        } else {
+            image = nil
+        }
         onComplete(self, image)
     }
 }
+
+private extension UIImage {
+    func normalizedOrientation() -> UIImage {
+        if imageOrientation == .up { return self }
+        UIGraphicsBeginImageContextWithOptions(size, false, scale)
+        defer { UIGraphicsEndImageContext() }
+        draw(in: CGRect(origin: .zero, size: size))
+        return UIGraphicsGetImageFromCurrentImageContext() ?? self
+    }
+}
+
+// MARK: - Video output delegate
+private final class VideoOutputDelegate: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate {
+    private let handler: (CIImage, CMTime) -> Void
+    init(handler: @escaping (CIImage, CMTime) -> Void) { self.handler = handler }
+
+    func captureOutput(_ output: AVCaptureOutput, didOutput sampleBuffer: CMSampleBuffer, from connection: AVCaptureConnection) {
+        guard let pb: CVPixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
+        let time = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
+        let ci = CIImage(cvPixelBuffer: pb)
+        handler(ci, time)
+    }
+}
+
+// (frameHandler stored directly on CameraService)
 
 // MARK: - SwiftUI Preview layer
 struct CameraPreviewView: UIViewRepresentable {
@@ -213,3 +277,4 @@ struct CameraPreviewView: UIViewRepresentable {
         }
     }
 }
+
